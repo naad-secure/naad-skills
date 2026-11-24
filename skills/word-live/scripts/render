@@ -1,0 +1,36 @@
+#!/bin/zsh
+# Like `word`, but saves the pages a job exported with Render as PNGs:
+# <prefix>-1.png, <prefix>-2.png, ... (one per page), printing their paths.
+# Usage: render <prefix> <<'PS' ... Render 3 ... PS
+prefix=$1
+${0:A:h}/word | python3 -c '
+import sys, re, base64
+s = sys.stdin.read()
+m = re.search(r"<<PDF>>(.*?)<<END>>", s, re.S)
+rest = re.sub(r"<<PDF>>.*?<<END>>", "", s, flags=re.S).strip()
+if rest: print(rest)
+if not m: sys.exit("no PDF in job output")
+open(sys.argv[1] + ".pdf", "wb").write(base64.b64decode(m.group(1)))
+' "$prefix" || exit 1
+swift - "$prefix" <<'SWIFT'
+import PDFKit
+import AppKit
+let prefix = CommandLine.arguments[1]
+let doc = PDFDocument(url: URL(fileURLWithPath: prefix + ".pdf"))!
+for i in 0..<doc.pageCount {
+  let page = doc.page(at: i)!
+  let box = page.bounds(for: .mediaBox)
+  let scale: CGFloat = 1600 / box.width
+  let size = NSSize(width: box.width * scale, height: box.height * scale)
+  let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+  NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+  let ctx = NSGraphicsContext.current!.cgContext
+  ctx.setFillColor(NSColor.white.cgColor); ctx.fill(CGRect(origin: .zero, size: size))
+  ctx.scaleBy(x: scale, y: scale)
+  page.draw(with: .mediaBox, to: ctx)
+  let path = "\(prefix)-\(i + 1).png"
+  try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
+  print(path)
+}
+SWIFT

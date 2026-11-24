@@ -1,0 +1,42 @@
+#!/bin/zsh
+# macOS: run a PowerShell snippet (from stdin) inside the live Word in the
+# Parallels Windows VM. The snippet sees $word, $doc and the helpers in prelude.ps1.
+# (On Windows itself, use word.cmd instead.)
+#
+# No console window appears on the Windows desktop: the job runs in the user's
+# session through hidden.vbs, writing its output to a local Windows file, and
+# collect.ps1 reads it back as SYSTEM, whose session is not on screen.
+#
+# Everything reaches Windows through prlctl's stdin and is written to local
+# files in C:\Users\Public by SYSTEM, so no shared folder is needed (and files
+# written into a shared folder from the Mac can take over 10 s to show up).
+dir=${0:A:h}
+# The VM: $WORD_VM, or the first running Parallels VM.
+vm=${WORD_VM:-$(prlctl list -o name --no-header 2>/dev/null | head -1 | sed 's/ *$//')}
+[[ -n $vm ]] || { echo "no running Parallels VM (set WORD_VM)" >&2; exit 1; }
+pub='C:\Users\Public'
+base="$pub\\word-live-$$"
+
+# prlctl now and then fails a call with "Invalid argument" (exit 255); retry
+# that, but not a job that ran and failed on its own.
+run() { for try in 1 2 3; do "$@"; rc=$?; [[ $rc != 255 ]] && return $rc; sleep 1; done; return $rc }
+
+# The two Windows-side helpers are copied in once per version: their names
+# carry a hash of their content, so an edited helper is copied again.
+helper() { print -r -- "$pub\\word-live-${1:r}-$(md5 -q "$dir/$1" | cut -c1-8).${1:e}" }
+install() { prlctl exec "$vm" cmd /c "if not exist $2 (findstr ^^ > $2.tmp && move /y $2.tmp $2 >nul)" < "$dir/$1" }
+vbs=$(helper hidden.vbs); collect=$(helper collect.ps1)
+run install hidden.vbs "$vbs" && run install collect.ps1 "$collect" || exit 1
+
+# Buffered in a local file so a retry can send the same job again.
+job=$(mktemp -t word-live)
+trap 'rm -f "$job"' EXIT
+{ printf '\xEF\xBB\xBF'; cat "$dir/prelude.ps1"; echo; cat; } > "$job"
+send() { prlctl exec "$vm" cmd /c "findstr ^^ > $base.ps1" < "$job" }
+run send || exit 1
+run prlctl exec "$vm" --current-user wscript.exe //B "$vbs" "$base.ps1" "$base.out" ||
+  { prlctl exec "$vm" cmd /c "del $base.ps1"; exit 1; }
+run prlctl exec "$vm" powershell -NoProfile -ExecutionPolicy Bypass -File "$collect" "$base.out"
+rc=$?
+prlctl exec "$vm" cmd /c "del $base.ps1 $base.out $base.out.done $base.out.started" >/dev/null 2>&1
+exit $rc

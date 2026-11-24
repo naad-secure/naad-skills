@@ -1,0 +1,8 @@
+#!/bin/zsh
+# Screenshot the VM screen (what the user sees). Usage: shot [out.png]
+# The VM: $WORD_VM, or the first running Parallels VM.
+vm=${WORD_VM:-$(prlctl list -o name --no-header 2>/dev/null | head -1 | sed 's/ *$//')}
+[[ -n $vm ]] || { echo "no running Parallels VM (set WORD_VM)" >&2; exit 1; }
+out=${1:-${TMPDIR:-/tmp}/word-shot.png}
+mkdir -p ${out:h}
+prlctl capture "$vm" --file "$out" >/dev/null && echo "$out"
